@@ -1,0 +1,38 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: usercase01
+spec:
+  selector:
+    matchLabels:
+      kind: usercase01
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        kind: usercase01
+    spec:
+      restartPolicy: Always
+      serviceAccountName: tester
+      containers:
+      - name: usercase01
+        image: localhost:5000/service-disco:usercase01
+        imagePullPolicy: Always
+        args: ["--broker", "k8s", "--port", "9527"]
+        ports:
+        - name: addr
+          containerPort: 9527
+        env:
+        - name: MY_POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: MY_POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: MY_POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP

@@ -1,9 +1,7 @@
 package xdisco
 
-import (
-	"github.com/cupen/xdisco/health"
-)
+import "github.com/cupen/xdisco/server"
 
 type Options struct {
-	HealthChecker health.Checker
+	HealthChecker server.Checker
 }

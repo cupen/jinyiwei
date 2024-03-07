@@ -14,7 +14,10 @@ func TestServer(_t *testing.T) {
 		for i := 0; i < count; i++ {
 			rs = append(rs, &Server{
 				ID:   fmt.Sprintf("%d", i),
-				Addr: fmt.Sprintf("127.0.0.1:%d", i),
+				Host: "127.0.0.1",
+				Ports: map[string]int{
+					"tcp": i,
+				},
 			})
 		}
 		return rs

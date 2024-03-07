@@ -11,7 +11,6 @@ import (
 
 	"github.com/cupen/xdisco/broker"
 	"github.com/cupen/xdisco/eventhandler"
-	"github.com/cupen/xdisco/health"
 	"github.com/cupen/xdisco/logs"
 	"github.com/cupen/xdisco/server"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -24,45 +23,33 @@ var (
 )
 
 type Etcd struct {
-	baseKey   string
+	opts      *Options
 	cfg       clientv3.Config
 	client    *clientv3.Client
 	cacheKeys map[string]struct{}
 	stateCh   chan server.State
-	ttl       time.Duration
 }
 
-func New(baseKey string, ttl time.Duration) (*Etcd, error) {
-	cfg := clientv3.Config{
-		Endpoints:   []string{"127.0.0.1:2379"},
-		DialTimeout: 3 * time.Second,
+func New(opts *Options) (*Etcd, error) {
+	if err := opts.Check(); err != nil {
+		return nil, err
 	}
-	if baseKey == "" {
-		return nil, fmt.Errorf("empty baseKey")
-	}
-	return NewWithConfig(baseKey, ttl, cfg)
+	return NewWithConfig(opts, opts.EtcdConfig())
 }
 
-func NewWithConfig(baseKey string, ttl time.Duration, cfg clientv3.Config) (*Etcd, error) {
-	if baseKey == "" {
-		return nil, fmt.Errorf("empty baseKey")
-	}
-	if ttl <= time.Second {
-		return nil, fmt.Errorf("invalid ttl(%v). it must bigger than 1 second", ttl)
-	}
-	c, err := clientv3.New(cfg)
+func NewWithConfig(opts *Options, cfg clientv3.Config) (*Etcd, error) {
+	cli, err := clientv3.New(cfg)
 	if err != nil {
 		return nil, err
 	}
-	if c == nil {
+	if cli == nil {
 		return nil, fmt.Errorf("failed to connect etcd. cfg: %+v", cfg)
 	}
 	return &Etcd{
-		baseKey:   baseKey,
+		opts:      opts,
 		cfg:       cfg,
-		client:    c,
+		client:    cli,
 		cacheKeys: map[string]struct{}{},
-		ttl:       ttl,
 	}, nil
 }
 
@@ -73,13 +60,14 @@ func (e *Etcd) initWatch() {
 	e.stateCh = make(chan server.State)
 }
 
-func (e *Etcd) Watch(ctx context.Context, kind string, h eventhandler.Handler, checker health.Checker) error {
+func (e *Etcd) Watch(ctx context.Context, kind string, h eventhandler.Handler, checker server.Checker) error {
 	if !h.IsValid() {
 		return fmt.Errorf("invalid eventhandler")
 	}
+	logPrefix := fmt.Sprintf("[etcd] Watch<%s> ", kind)
 	now := time.Now()
 	fullKey := e.buildKeyOfList(kind)
-	log2.Infof("[etcd] watch<%s> starting: %s", kind, fullKey)
+	log2.Infof(logPrefix+"starting: %s", fullKey)
 	watchCh := e.client.Watch(ctx, fullKey, clientv3.WithPrefix())
 
 	pingTS := time.Now()
@@ -88,7 +76,7 @@ func (e *Etcd) Watch(ctx context.Context, kind string, h eventhandler.Handler, c
 	if err != nil {
 		return err
 	}
-	log2.Infof("[etcd] %d servers<%s> found", len(servers), kind)
+	log2.Infof(logPrefix+"%d servers found", len(servers))
 	h.OnInit(servers)
 	for _, s := range servers {
 		e.cacheKeys[s.GetKey()] = struct{}{}
@@ -96,7 +84,7 @@ func (e *Etcd) Watch(ctx context.Context, kind string, h eventhandler.Handler, c
 	pingCost := time.Since(pingTS)
 	e.initWatch()
 	go e.startWatch(ctx, watchCh, h)
-	log2.Infof("[etcd] watch<%s> started: %s cost:%v, ping:%v", kind, fullKey, time.Since(now), pingCost)
+	log2.Infof(logPrefix+" started: %s cost:%v, ping:%v", fullKey, time.Since(now), pingCost)
 	return nil
 }
 
@@ -211,7 +199,7 @@ func (e *Etcd) fetchServers(fullKey string) ([]*server.Server, error) {
 	return slist, nil
 }
 
-func (e *Etcd) fetchServersAlived(fullKey string, hc health.Checker) ([]*server.Server, error) {
+func (e *Etcd) fetchServersAlived(fullKey string, hc server.Checker) ([]*server.Server, error) {
 	servers, err := e.fetchServers(fullKey)
 	if err != nil {
 		return nil, err
@@ -241,7 +229,7 @@ func (e *Etcd) Start(ctx context.Context, s *server.Server, hooks ...broker.Hook
 	}
 
 	s.SetStatus(server.States.Running)
-	ttl := e.ttl
+	ttl := e.opts.TTL
 	if ttl < 30*time.Second {
 		ttl = 30 * time.Second
 	}
@@ -344,9 +332,9 @@ func (e *Etcd) SetState(state server.State) {
 }
 
 func (e *Etcd) buildKey(kind, id string) string {
-	return strings.Join([]string{e.baseKey, kind, id}, "/")
+	return strings.Join([]string{e.opts.BaseKey, kind, id}, "/")
 }
 
 func (e *Etcd) buildKeyOfList(kind string) string {
-	return strings.Join([]string{e.baseKey, kind}, "/") + "/"
+	return strings.Join([]string{e.opts.BaseKey, kind}, "/") + "/"
 }

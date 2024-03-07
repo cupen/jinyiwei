@@ -19,7 +19,7 @@ func TestWatch_Init(t *testing.T) {
 
 	bk, err := New("/testcase/watch/j&jio(llg", 10*time.Second)
 	assert.NoError(err)
-	hchecker := health.NewFunc(func(addr, publicAddr string) error {
+	hchecker := health.Custom(func(addr, publicAddr string) error {
 		return nil
 	})
 

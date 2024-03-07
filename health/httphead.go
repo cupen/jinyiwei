@@ -3,27 +3,46 @@ package health
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
+
+	"github.com/cupen/xdisco/server"
 )
 
 const (
-	TIMEOUT = 1 * time.Second
+	TIMEOUT = 2 * time.Second
 	RETRIES = 3
 )
 
-type HttpHead struct {
-	Timeout time.Duration
-	Retries int
+type httpChecker struct {
+	Timeout  time.Duration
+	Retries  int
+	method   string
+	path     string
+	portName string
 }
 
-func NewHttpHead() *HttpHead {
-	return &HttpHead{
-		Timeout: TIMEOUT,
-		Retries: RETRIES,
+func Http(method, path string, portName ...string) *httpChecker {
+	method = strings.ToUpper(method)
+	switch method {
+	case "GET", "HEAD", "OPTIONS":
+	default:
+		panic(fmt.Errorf("unsupported method: %s", method))
+	}
+	var _portName = "http"
+	if len(portName) > 0 {
+		_portName = portName[0]
+	}
+	return &httpChecker{
+		Timeout:  TIMEOUT,
+		Retries:  RETRIES,
+		method:   method,
+		path:     path,
+		portName: _portName,
 	}
 }
 
-func (hh *HttpHead) wrapError(url string, resp *http.Response, err error) error {
+func (hh *httpChecker) wrapError(url string, resp *http.Response, err error) error {
 	if err != nil {
 		return fmt.Errorf("%w from %s", err, url)
 	}
@@ -36,9 +55,10 @@ func (hh *HttpHead) wrapError(url string, resp *http.Response, err error) error 
 	return nil
 }
 
-func (hh *HttpHead) Ping(addr, publicUrl string) error {
+func (hh *httpChecker) Ping(s *server.Server) error {
+	addr := s.PrivateAddress(hh.portName)
 	if addr == "" {
-		return fmt.Errorf("empty address")
+		return fmt.Errorf("empty address, portName:%s", hh.portName)
 	}
 	var timeout = hh.Timeout
 	var retries = hh.Retries

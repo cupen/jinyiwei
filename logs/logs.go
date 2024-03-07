@@ -5,6 +5,17 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
+var (
+	rootLogger *zap.Logger
+)
+
+func Root() *zap.Logger {
+	if rootLogger == nil {
+		rootLogger = Logger("info")
+	}
+	return rootLogger
+}
+
 func Logger(level string) *zap.Logger {
 	lv := zap.InfoLevel
 	if level == "debug" {

@@ -8,7 +8,6 @@ import (
 
 	"github.com/cupen/xdisco/broker"
 	"github.com/cupen/xdisco/eventhandler"
-	"github.com/cupen/xdisco/health"
 	"github.com/cupen/xdisco/server"
 	"go.uber.org/zap"
 	"golang.org/x/net/context"
@@ -81,7 +80,7 @@ func (c *Controller) initWatch() {
 	}
 	c.stateCh = make(chan server.State)
 }
-func (c *Controller) startWatch(ctx context.Context, h eventhandler.Handler, hc health.Checker, watchCh watch.Interface) {
+func (c *Controller) startWatch(ctx context.Context, h eventhandler.Handler, hc server.Checker, watchCh watch.Interface) {
 	limiter := rate.NewLimiter(rate.Every(100*time.Millisecond), 10)
 	for {
 		select {
@@ -96,7 +95,7 @@ func (c *Controller) startWatch(ctx context.Context, h eventhandler.Handler, hc 
 	}
 }
 
-func (c *Controller) handleEvent(ev *watch.Event, h eventhandler.Handler, hc health.Checker) error {
+func (c *Controller) handleEvent(ev *watch.Event, h eventhandler.Handler, hc server.Checker) error {
 	if ev == nil {
 		return nil
 	}
@@ -131,7 +130,7 @@ func (c *Controller) handleEvent(ev *watch.Event, h eventhandler.Handler, hc hea
 	return nil
 }
 
-func (c *Controller) startInformer(ctx context.Context, h eventhandler.Handler, hc health.Checker) error {
+func (c *Controller) startInformer(ctx context.Context, h eventhandler.Handler, hc server.Checker) error {
 	watcher := c.watcher
 	_, informer := cache.NewIndexerInformer(watcher, &v1.Pod{}, 0, cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
@@ -167,7 +166,7 @@ func (c *Controller) startInformer(ctx context.Context, h eventhandler.Handler, 
 	return nil
 }
 
-func (c *Controller) Watch(ctx context.Context, kind string, h eventhandler.Handler, hc health.Checker) error {
+func (c *Controller) Watch(ctx context.Context, kind string, h eventhandler.Handler, hc server.Checker) error {
 	if !h.IsValid() {
 		panic(fmt.Errorf("invalid eventhandler"))
 	}
@@ -266,25 +265,31 @@ func (c *Controller) updateSelfPod(ctx context.Context, updater func(*v1.Pod) er
 }
 
 func (c *Controller) newServer(kind string) (*server.Server, error) {
+	if kind == "" {
+		return nil, fmt.Errorf("empty kind")
+	}
 	pod, err := c.getSelfPod(context.TODO())
 	if err != nil {
 		return nil, err
 	}
+	// host := pod.Spec.Containers[0].Name
+	// portMeta := pod.Spec.Containers[0].Ports[0]
 	port := pod.Spec.Containers[0].Ports[0].ContainerPort
 	if port <= 0 {
 		return nil, fmt.Errorf("invalid port of container in Pod. podName:%s", pod.ObjectMeta.Name)
 	}
-	if kind == "" {
-		return nil, fmt.Errorf("empty kind")
-	}
 
 	meta := c.podMeta
-	addr := fmt.Sprintf("%s:%d", meta.IP, port)
+	// addr := fmt.Sprintf("%s:%d", meta.IP, port)
 	// addr := fmt.Sprintf("%s:%d", pod.Name, port)
 	id := pod.ObjectMeta.Name
-	s := server.NewServer(id, kind, addr)
+	s := server.NewServer(id, kind, meta.IP)
 	s.Labels = pod.GetLabels()
 	s.Annotations = pod.GetAnnotations()
+	s.Ports = map[string]int{}
+	for _, p := range pod.Spec.Containers[0].Ports {
+		s.Ports[p.Name] = int(p.ContainerPort)
+	}
 	return s, nil
 }
 
@@ -293,7 +298,6 @@ func (c *Controller) Start(ctx context.Context, s *server.Server, hooks ...broke
 	if err != nil {
 		return err
 	}
-	sn.PublicAddr = s.PublicAddr
 	sn.Weight = s.Weight
 	updater := func(_p *v1.Pod) error {
 		return updatePod(_p, sn)

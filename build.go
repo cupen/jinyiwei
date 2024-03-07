@@ -6,13 +6,12 @@ import (
 	"github.com/cupen/xdisco/server"
 )
 
-func NewServer(kind, addr string) *server.Server {
+func NewServer(id, kind, host string) *server.Server {
 	if kind == "" {
 		panic(fmt.Errorf("empty kind of server"))
 	}
-	if addr == "" {
+	if host == "" {
 		panic(fmt.Errorf("empty address of server"))
 	}
-	id := fmt.Sprintf("%s", addr)
-	return server.NewServer(id, kind, addr)
+	return server.NewServer(id, kind, host)
 }

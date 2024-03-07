@@ -9,24 +9,23 @@ import (
 
 	"github.com/cupen/xdisco/broker"
 	"github.com/cupen/xdisco/eventhandler"
-	"github.com/cupen/xdisco/health"
 	"github.com/cupen/xdisco/server"
-	"github.com/rs/zerolog/log"
 	"go.uber.org/zap"
 )
 
 type Service struct {
-	kind         string
-	m            sync.Map
-	unhealthList *server.ServerList
-	healths      atomic.Value // ServerList
-	unhealhs     atomic.Value // ServerList Unhealth
-	broker       broker.Broker
-	checker      health.Checker
-	onChanged    func(*Service)
+	kind      string
+	m         sync.Map
+	healths   atomic.Value // ServerList
+	unhealths atomic.Value // ServerList Unhealth
+	broker    broker.Broker
+	checker   server.Checker
+	onChanged func(*Service)
+
+	logPrefix string
 }
 
-func NewService(kind string, w broker.Broker, c health.Checker) *Service {
+func NewService(kind string, w broker.Broker, c server.Checker) *Service {
 	if w == nil {
 		panic(fmt.Errorf("nil broker"))
 	}
@@ -53,7 +52,7 @@ func (this *Service) Kind() string {
 	return this.kind
 }
 
-func (this *Service) Checker() health.Checker {
+func (this *Service) Checker() server.Checker {
 	return this.checker
 }
 
@@ -97,7 +96,7 @@ func (this *Service) onServersInit(servers []*server.Server) {
 	for _, s := range alives {
 		key := s.GetKey()
 		this.m.Store(key, s)
-		log2.Infof("server<%s> inited: %s", s.Kind, key)
+		log2.Infof("server<%s> initialized: %s", s.Kind, key)
 	}
 	this.renewServers()
 	if this.onChanged != nil {
@@ -113,13 +112,13 @@ func (this *Service) onServersInit(servers []*server.Server) {
 func (this *Service) onServerAdd(key string, s *server.Server) {
 	now := time.Now()
 	if err := s.Check(this.checker); err != nil {
-		log2.Warnf("health check failed: %v from: %s", err, key)
+		log2.Warnf("server<%s> unhealth: %s reason:%v", key, err)
 		this.onServerUnhealth(key, s)
 		return
 	}
 	this.m.Store(key, s)
 	this.renewServers()
-	log2.Infof("server<%s> found: %s  cost: %v", s.Kind, key, time.Since(now))
+	log2.Infof("server<%s> found  : %s  cost: %v", s.Kind, key, time.Since(now))
 	if this.onChanged != nil {
 		this.onChanged(this)
 	}
@@ -134,7 +133,7 @@ func (this *Service) onServerUpdate(key string, s *server.Server) {
 	}
 	this.m.Store(key, s)
 	this.renewServers()
-	log2.Infof("server<%s> keepalive: %s  cost: %v", s.Kind, key, time.Since(now))
+	log2.Debugf("server<%s> alives: %s  cost: %v", s.Kind, key, time.Since(now))
 	if this.onChanged != nil {
 		this.onChanged(this)
 	}
@@ -163,9 +162,13 @@ func (this *Service) CleanUnhealthServer() (deleted int, isChanged bool) {
 	if len(alives) != len(servers) {
 		for _, dead := range deads {
 			this.m.Delete(dead.GetKey())
+			// this.onServerUnhealth(dead.GetKey(), dead)
 		}
 		this.renewServers()
-		log2.Warnf("serverlist<%s> cleaned. changed: %d -> %d", len(servers), len(alives))
+
+		// server.Sort(deads)
+		// this.unhealths.Store(server.NewServerList(deads))
+		log2.Warnf("serverlist<%s> cleaned. changed: %d -> %d", this.Kind, len(servers), len(alives))
 		return len(deads), true
 	}
 	return len(deads), false

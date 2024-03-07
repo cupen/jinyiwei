@@ -38,9 +38,10 @@ start-with-etcd:
 	tmux split-window -t "eg:0"
 	tmux split-window -t "eg:0.0" -h
 	tmux split-window -t "eg:0.2" -h
-	tmux send-keys -t "eg:0.0" "go run main.go --broker etcd --port 0" Enter
-	tmux send-keys -t "eg:0.1" "go run main.go --broker etcd --port 0" Enter
-	tmux send-keys -t "eg:0.2" "go run main.go --broker etcd --port 0" Enter
+	tmux send-keys -t "eg:0.0" "go run . server --broker etcd --port 0" Enter
+	tmux send-keys -t "eg:0.1" "go run . server --broker etcd --port 0" Enter
+	tmux send-keys -t "eg:0.2" "go run . server --broker etcd --port 0" Enter
+	tmux send-keys -t "eg:0.3" "sleep 1" Enter "go run . client --broker etcd --username 9527" Enter
 	tmux attach -t eg
 	tmux kill-session -t eg
 

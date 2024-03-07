@@ -1,0 +1,29 @@
+@startuml xdisco 
+participant "Client 1" as c1
+participant "Client 2" as c2
+participant "Server 1" as s1
+participant "Server 2" as s2
+participant "Server 3" as s3
+database "Borker(etcd/k8s)" as db
+
+s1 -> db++: Register
+deactivate db
+s2 -> db++: Register
+deactivate db
+
+c1 -> db++: Watch
+c1 <-- db--: ServerJoin(1,2)
+c2 -> db++: Watch
+c2 <-- db--: ServerJoin(1,2)
+
+s3 -> db++: Register
+c1 <-- db: ServerJoin(3)
+c2 <-- db: ServerJoin(3)
+deactivate db
+
+s1 -> db++: Unregister
+c1 <-- db: ServerLeave(1)
+c2 <-- db: ServerLeave(1)
+deactivate db
+
+@enduml

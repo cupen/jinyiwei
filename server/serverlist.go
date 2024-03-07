@@ -2,7 +2,6 @@ package server
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
 
@@ -20,10 +19,9 @@ func NewServerList(list []*Server) *ServerList {
 	for _, s := range list {
 		m[s.GetID()] = s
 	}
-
 	buckets := make([]string, len(list))
 	for i := 0; i < len(list); i++ {
-		buckets[i] = list[i].Addr
+		buckets[i] = list[i].ID
 	}
 	return &ServerList{
 		chash:      lookup.NewRendezvous(buckets),
@@ -39,9 +37,7 @@ func NewServerListFromMapV2(m map[string]*Server) *ServerList {
 		list[i] = s
 		i++
 	}
-	sort.Slice(list, func(i, j int) bool {
-		return strings.Compare(list[i].GetID(), list[j].GetID()) < 0
-	})
+	Sort(list)
 	return NewServerList(list)
 }
 
@@ -53,10 +49,7 @@ func NewServerListFromMap(m *sync.Map) *ServerList {
 		list = append(list, s)
 		return true
 	})
-
-	sort.Slice(list, func(i, j int) bool {
-		return strings.Compare(list[i].GetID(), list[j].GetID()) < 0
-	})
+	Sort(list)
 	return NewServerList(list)
 }
 
@@ -116,5 +109,6 @@ func (this *ServerList) Dump() string {
 
 func (this *ServerList) Lookup(id string) *Server {
 	serverId := this.chash.Get(id)
+	log2.Infof("lookup server<%s> by id<%s>", serverId, id)
 	return this.Get(serverId)
 }

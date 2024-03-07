@@ -3,14 +3,20 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"flag"
 	"fmt"
-	"io"
 	"net"
+	"os"
+	"os/signal"
+	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
-	sd "github.com/cupen/xdisco"
+	"github.com/cupen/xdisco"
 	brokermod "github.com/cupen/xdisco/broker"
 	"github.com/cupen/xdisco/broker/etcd"
 	"github.com/cupen/xdisco/broker/k8s"
@@ -24,152 +30,296 @@ var (
 	log  = logs.Logger("info")
 	log2 = log.Sugar()
 
+	// clientFlags = flag.NewFlagSet("client", flag.ExitOnError)
+	// serverFlags = flag.NewFlagSet("server", flag.ExitOnError)
 	broker = flag.String("broker", "etcd", "etcd or k8s")
 	port   = flag.Int("port", 0, "tcp port of echoserver")
+
+	usename = flag.String("username", "", "client username")
 )
 
 func main() {
-	flag.Parse()
-	var bk brokermod.Broker
-	var err error
-	switch *broker {
-	case "etcd":
-		bk, err = etcd.New("/xdisco/examples", 3*time.Second)
-	case "k8s":
-		bk, err = k8s.New(map[string]string{})
+	log.Info("debug", zap.Any("args", os.Args))
+	flag.CommandLine.Parse(os.Args[2:])
+	subcmd := os.Args[1]
+	switch subcmd {
+	case "client":
+		runClient(*broker, *usename)
+	case "server":
+		runServer(*broker, *port)
 	default:
-		log.Fatal("invalid broker", zap.String("broker", *broker))
+		log2.Warnf("invalid subcommand: \"%s\"", subcmd)
+		os.Exit(127)
 	}
-
-	if err != nil {
-		log.Fatal("broker init failed", zap.Error(err))
-	}
-
-	hc := echoServerHealth()
-	svc := sd.NewService("usercase01", bk, hc)
-	svc.OnChanged(func(s *sd.Service) {
-		slist := s.GetServerList()
-		log.Info("current serverlist", zap.Int("servers", slist.Size()))
-	})
-
-	if err := svc.Start(context.TODO()); err != nil {
-		log.Panic("service watch failed", zap.Error(err))
-		return
-	}
-
-	listen := fmt.Sprintf("0.0.0.0:%d", *port)
-	startEchoServer(&listen)
-
-	id := listen
-	s := server.NewServer(id, "usercase01", listen)
-	if err := bk.Start(context.TODO(), s); err != nil {
-		log.Panic("server start failed", zap.Error(err))
-		return
-	}
-	select {}
 }
 
-func startEchoServer(listen *string) {
-	l, err := net.Listen("tcp4", *listen)
+func runClient(broker, username string) {
+	bk := setupBorker(broker)
+	svc := setupService(bk)
+
+	log.Info("======= server list =======")
+	svc.GetServerList().ForEach(func(k string, s *server.Server) {
+		log2.Infof("id:%s  addr: %s", k, s.PrivateAddress("tcp"))
+	})
+	log.Info("===========================")
+
+	fmt.Printf("!hello '%s'!\n", username)
+
+	for {
+		s := svc.GetServerList().Lookup(username)
+		if s == nil {
+			fmt.Println("no server found")
+			return
+		}
+		addr := s.PrivateAddress("tcp")
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			panic(fmt.Errorf("dial failed: %w", err))
+		}
+		showPrompt := func() {
+			fmt.Printf("$ [%s]: ", addr)
+		}
+
+		showPrompt()
+
+		scanner := bufio.NewScanner(os.Stdin)
+
+		c := NewPacketCodec(conn)
+		for scanner.Scan() {
+			text := strings.TrimSpace(scanner.Text())
+			if text == "quit" || text == "exit" {
+				defer c.Close()
+				break
+			}
+			if err := c.Write([]byte(text)); err != nil {
+				log2.Warnf("write failed: %v", err)
+				defer c.Close()
+				break
+			}
+			resp, err := c.Read()
+			if err != nil {
+				log2.Warn("read failed", zap.Error(err))
+				defer c.Close()
+				break
+			}
+			fmt.Printf("%s\n", string(resp))
+			showPrompt()
+		}
+	}
+	os.Exit(0)
+}
+
+func runServer(broker string, port int) {
+	bk := setupBorker(broker)
+	// svc := setupService(bk)
+	listen := fmt.Sprintf("0.0.0.0:%d", port)
+	lis, err := net.Listen("tcp4", listen)
 	if err != nil {
 		log.Panic("listen failed", zap.Error(err))
 		return
 	}
-	*listen = l.Addr().String()
+	defer lis.Close()
+
+	listen = lis.Addr().String()
+	serverId := fakeUID()
+	host := GetLocalIP()
+	if host == "" {
+		panic("get local ip failed")
+	}
+	s := server.NewServer(serverId, "usercase01", host)
+	s.Ports["tcp"] = pickupPort(listen)
+
+	c, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := bk.Start(c, s); err != nil {
+		log.Panic("server start failed", zap.Error(err))
+		return
+	}
+	// c, cancel := context.WithCancel(context.Background())
+
+	var wg = sync.WaitGroup{}
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	wg.Add(1)
 	go func() {
-		defer l.Close()
-		for {
-			c, err := l.Accept()
-			if err != nil {
-				fmt.Println(err)
-				return
-			}
-			go func() {
-				// auto close or timeout
-				defer c.Close()
-				log.Info("new client from " + c.RemoteAddr().String())
-				clientAddr := c.RemoteAddr().String()
-				running := true
-				for running {
-					c.SetDeadline(time.Now().Add(10 * time.Second))
-					inputData, err := bufio.NewReader(c).ReadString('\n')
-					if err != nil {
-						if err != io.EOF {
-							log.Warn("invalid client: read failed ", zap.Error(err))
-						}
-						break
-					}
-					input := strings.TrimSpace(string(inputData))
-					args := strings.Split(input, " ")
-					cmd := strings.TrimSpace(args[0])
-					log2.Infof("%s: input <%s>", clientAddr, input)
-					switch cmd {
-					case "quit", "exit":
-						c.Write([]byte("quited" + "\n"))
-						running = false
-					case "health":
-						c.Write([]byte(input + "\n"))
-					case "connect":
-						if len(args) <= 1 {
-							log.Warn("invalid input")
-							continue
-						}
-						log2.Infof("%s connecting %s", clientAddr, args[1])
-						conn, err := net.Dial("tcp", args[1])
-						if err != nil {
-							log2.Infof("%s connecting %s failed: err:%v", clientAddr, args[1], err)
-						} else {
-							log2.Infof("%s connected %s", clientAddr, args[1])
-							conn.Close()
-						}
-					default:
-						c.Write([]byte(input + "\n"))
-					}
-				}
-			}()
-		}
+		s := <-sig
+		log.Info("signal received", zap.Stringer("signal", s))
+		cancel()
+		lis.Close()
+
+		time.Sleep(200 * time.Millisecond)
+		wg.Done()
 	}()
-	log.Info("echoserver started", zap.String("listen", *listen))
+	log.Info("echoserver started", zap.Stringer("listen", lis.Addr()))
+	defer lis.Close()
+	for {
+		conn, err := lis.Accept()
+		if err != nil {
+			log.Warn("accept failed", zap.Error(err))
+			break
+		}
+		go onClientConnect(c, conn)
+	}
+	log.Info("echoserver stopped")
+	wg.Wait()
 }
 
-func echoServerHealth() health.Checker {
-	var client net.Conn
-	ensureConn := func(addr string, force bool) (net.Conn, error) {
-		if client == nil || force {
+func setupBorker(which string) (bk brokermod.Broker) {
+	var err error
+	switch which {
+	case "etcd":
+		opts := etcd.DefaultOptions()
+		opts.BaseKey = "/xdisco/example01"
+		bk, err = etcd.New(opts)
+	case "k8s":
+		bk, err = k8s.New(map[string]string{})
+	default:
+		err = fmt.Errorf("invalid broker name: %s", which)
+	}
+	if err != nil {
+		panic(fmt.Errorf("setup broker failed: %w", err))
+	}
+	return
+}
+
+func setupService(bk brokermod.Broker) *xdisco.Service {
+	hc := healthChecker()
+	svc := xdisco.NewService("usercase01", bk, hc)
+	svc.OnChanged(func(s *xdisco.Service) {
+		slist := s.GetServerList()
+		_ = slist
+		// log.Info("current serverlist", zap.Int("servers", slist.Size()))
+	})
+	if err := svc.Start(context.TODO()); err != nil {
+		log.Panic("service watch failed", zap.Error(err))
+		return nil
+	}
+	return svc
+}
+
+func healthChecker() server.Checker {
+	var c *TcpCodec
+	ensureConn := func(addr string, force bool) (*TcpCodec, error) {
+		if c == nil || force {
 			_conn, err := net.Dial("tcp", addr)
 			if err != nil {
 				return nil, err
 			}
-			client = _conn
+			c = NewPacketCodec(_conn)
 		}
-		return client, nil
+		return c, nil
 	}
 
-	hchecker := health.NewFunc(func(addr, publicAddr string) error {
+	hchecker := health.Custom(func(s *server.Server) error {
+		addr := s.PrivateAddress("tcp")
 		conn, err := ensureConn(addr, false)
 		if err != nil {
 			return err
 		}
-		if _, err = conn.Write([]byte("health\n")); err != nil {
+		if err = conn.Write([]byte("health")); err != nil {
 			conn, err = ensureConn(addr, true)
 			if err != nil {
+				log.Warn("reconnect failed", zap.Error(err))
 				return err
 			}
-			_, err = conn.Write([]byte("health\n"))
-
+			err = conn.Write([]byte("health"))
 		}
 		if err != nil {
+			log.Warn("unhealth ", zap.Error(err))
 			return err
 		}
-		respData, err := bufio.NewReader(conn).ReadString('\n')
+		resp, err := conn.Read()
 		if err != nil {
+			log.Warn("unhealth ", zap.Error(err))
 			return err
 		}
-		resp := strings.TrimSpace(string(respData))
-		if resp != "health" {
+		if string(resp) != "health" {
+			log.Warn("unhealth ", zap.Error(err))
 			return fmt.Errorf("invalid echoserver. resp:%s", resp)
 		}
 		return nil
 	})
 	return hchecker
+}
+
+func onClientConnect(c context.Context, conn net.Conn) {
+	// auto close or timeout
+	defer conn.Close()
+	clientAddr := conn.RemoteAddr().String()
+	log.Info("new client from " + clientAddr)
+
+	r := NewPacketCodec(conn)
+	for {
+		select {
+		case <-c.Done():
+			log2.Infof("<%s>: stopped", clientAddr)
+			return
+		default:
+			p, err := r.Read()
+			if err != nil {
+				break
+			}
+			input := strings.TrimSpace(string(p))
+			args := strings.Split(input, " ")
+			cmd := strings.TrimSpace(args[0])
+			log2.Infof("%s: input = \"%s\"", clientAddr, input)
+			switch cmd {
+			case "q", "quit", "exit":
+				r.Write([]byte("bye~"))
+				return
+			case "health":
+				r.Write([]byte(input))
+			case "connect":
+				if len(args) <= 1 {
+					log.Warn("invalid input")
+					continue
+				}
+				log2.Infof("%s connecting %s", clientAddr, args[1])
+				conn, err := net.Dial("tcp", args[1])
+				if err != nil {
+					log2.Infof("%s connecting %s failed: err:%v", clientAddr, args[1], err)
+				} else {
+					log2.Infof("%s connected %s", clientAddr, args[1])
+					conn.Close()
+				}
+			default:
+				r.Write([]byte(input))
+			}
+		}
+	}
+}
+
+// just for demo
+func fakeUID() string {
+	arr := make([]byte, 4)
+	rand.Read(arr)
+	return strings.Trim(base64.URLEncoding.EncodeToString(arr), "=")
+}
+
+func pickupPort(addr string) int {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		panic(err)
+	}
+	_port, err := strconv.Atoi(port)
+	if err != nil {
+		panic(err)
+	}
+	return _port
+}
+
+// https://stackoverflow.com/questions/23558425/how-do-i-get-the-local-ip-address-in-go
+func GetLocalIP() string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return ""
+	}
+	for _, address := range addrs {
+		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+			if ipnet.IP.To4() != nil {
+				return ipnet.IP.String()
+			}
+		}
+	}
+	return ""
 }

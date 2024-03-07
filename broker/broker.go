@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/cupen/xdisco/eventhandler"
-	"github.com/cupen/xdisco/health"
 	"github.com/cupen/xdisco/server"
 )
 
@@ -17,7 +16,7 @@ type Broker interface {
 
 // Watcher ...
 type Wacher interface {
-	Watch(context.Context, string, eventhandler.Handler, health.Checker) error
+	Watch(context.Context, string, eventhandler.Handler, server.Checker) error
 }
 
 // Service ...

@@ -24,8 +24,6 @@ func updatePod(pod *v1.Pod, s *server.Server) error {
 	}
 	keyspace := annotation_keyspace
 	attrs[keyspace+"kind"] = s.Kind
-	attrs[keyspace+"addr"] = s.Addr
-	attrs[keyspace+"publicAddr"] = s.PublicAddr
 	attrs[keyspace+"status"] = s.Status
 	pod.SetAnnotations(attrs)
 	return nil
@@ -43,8 +41,6 @@ func podAsServer(pod *v1.Pod) *server.Server {
 	s := &server.Server{
 		ID:          pod.ObjectMeta.Name,
 		Kind:        annotationsCleaned["kind"],
-		Addr:        annotationsCleaned["addr"],
-		PublicAddr:  annotationsCleaned["publicAddr"],
 		Status:      annotationsCleaned["status"],
 		Annotations: annotationsCleaned,
 		Labels:      pod.GetLabels(),
